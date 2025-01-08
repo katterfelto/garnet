@@ -14,7 +14,7 @@ class Program
 
         builder.Services.AddWindowsService(options =>
         {
-            options.ServiceName = "Microsoft Garnet Server";
+            options.ServiceName = "Garnet-Server";
         });
 
         var host = builder.Build();

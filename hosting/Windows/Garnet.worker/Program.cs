@@ -14,7 +14,7 @@ class Program
 
         builder.Services.AddWindowsService(options =>
         {
-            options.ServiceName = "Garnet-Server";
+            options.ServiceName = "SSL_MessageBroker3";
         });
 
         var host = builder.Build();

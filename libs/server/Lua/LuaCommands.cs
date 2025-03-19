@@ -2,10 +2,8 @@
 // Licensed under the MIT license.
 
 using System;
-using System.Collections.Generic;
 using Garnet.common;
 using Microsoft.Extensions.Logging;
-using Tsavorite.core;
 
 namespace Garnet.server
 {
@@ -28,15 +26,20 @@ namespace Garnet.server
                 return AbortWithWrongNumberOfArguments("EVALSHA");
             }
 
+            if (!parseState.TryGetInt(1, out var n) || (n < 0) || (n > count - 2))
+            {
+                return AbortWithErrorMessage(CmdStrings.RESP_ERR_GENERIC_VALUE_IS_NOT_INTEGER);
+            }
+
             ref var digest = ref parseState.GetArgSliceByRef(0);
 
+            var convertedToLower = false;
             LuaRunner runner = null;
 
             // Length check is mandatory, as ScriptHashKey assumes correct length
             if (digest.length == SessionScriptCache.SHA1Len)
             {
-                AsciiUtils.ToLowerInPlace(digest.Span);
-
+            tryAgain:
                 var scriptKey = new ScriptHashKey(digest.Span);
 
                 if (!sessionScriptCache.TryGetFromDigest(scriptKey, out runner))
@@ -51,17 +54,31 @@ namespace Garnet.server
                             return true;
                         }
                     }
+                    else if (!convertedToLower)
+                    {
+                        // On a miss (which should be rare) make sure the hash is lower case and try again.
+                        //
+                        // We assume that hashes will be sent in the same format as we return them (lower)
+                        // most of the time, so optimize for that.
+
+                        AsciiUtils.ToLowerInPlace(digest.Span);
+                        convertedToLower = true;
+                        goto tryAgain;
+                    }
                 }
             }
 
             if (runner == null)
             {
-                while (!RespWriteUtils.WriteError(CmdStrings.RESP_ERR_NO_SCRIPT, ref dcurr, dend))
+                while (!RespWriteUtils.TryWriteError(CmdStrings.RESP_ERR_NO_SCRIPT, ref dcurr, dend))
                     SendAndReset();
             }
             else
             {
+                // We assume here that ExecuteScript does not raise exceptions
+                sessionScriptCache.StartRunningScript(runner);
                 ExecuteScript(count - 1, runner);
+                sessionScriptCache.StopRunningScript();
             }
 
             return true;
@@ -85,6 +102,11 @@ namespace Garnet.server
                 return AbortWithWrongNumberOfArguments("EVAL");
             }
 
+            if (!parseState.TryGetInt(1, out var n) || (n < 0) || (n > count - 2))
+            {
+                return AbortWithErrorMessage(CmdStrings.RESP_ERR_GENERIC_VALUE_IS_NOT_INTEGER);
+            }
+
             ref var script = ref parseState.GetArgSliceByRef(0);
 
             // that this is stack allocated is load bearing - if it moves, things will break
@@ -99,12 +121,15 @@ namespace Garnet.server
 
             if (runner == null)
             {
-                while (!RespWriteUtils.WriteError(CmdStrings.RESP_ERR_NO_SCRIPT, ref dcurr, dend))
+                while (!RespWriteUtils.TryWriteError(CmdStrings.RESP_ERR_NO_SCRIPT, ref dcurr, dend))
                     SendAndReset();
             }
             else
             {
+                // We assume here that ExecuteScript does not raise exceptions
+                sessionScriptCache.StartRunningScript(runner);
                 ExecuteScript(count - 1, runner);
+                sessionScriptCache.StopRunningScript();
             }
 
             return true;
@@ -127,7 +152,7 @@ namespace Garnet.server
 
             // Returns an array where each element is a 0 if the script does not exist, and a 1 if it does
 
-            while (!RespWriteUtils.WriteArrayLength(parseState.Count, ref dcurr, dend))
+            while (!RespWriteUtils.TryWriteArrayLength(parseState.Count, ref dcurr, dend))
                 SendAndReset();
 
             for (var shaIx = 0; shaIx < parseState.Count; shaIx++)
@@ -145,7 +170,7 @@ namespace Garnet.server
                     exists = storeWrapper.storeScriptCache.ContainsKey(sha1Arg) ? 1 : 0;
                 }
 
-                while (!RespWriteUtils.WriteArrayItem(exists, ref dcurr, dend))
+                while (!RespWriteUtils.TryWriteInt32(exists, ref dcurr, dend))
                     SendAndReset();
             }
 
@@ -168,7 +193,7 @@ namespace Garnet.server
             }
             else if (parseState.Count == 1)
             {
-                // we ignore this, but should validate it
+                // We ignore this, but should validate it
                 ref var arg = ref parseState.GetArgSliceByRef(0);
 
                 AsciiUtils.ToUpperInPlace(arg.Span);
@@ -187,7 +212,7 @@ namespace Garnet.server
             // Flush session script cache
             sessionScriptCache.Clear();
 
-            while (!RespWriteUtils.WriteDirect(CmdStrings.RESP_OK, ref dcurr, dend))
+            while (!RespWriteUtils.TryWriteDirect(CmdStrings.RESP_OK, ref dcurr, dend))
                 SendAndReset();
 
             return true;
@@ -229,7 +254,7 @@ namespace Garnet.server
                     _ = storeWrapper.storeScriptCache.TryAdd(digestOnHeap.Value, source.ToArray());
                 }
 
-                while (!RespWriteUtils.WriteBulkString(digest, ref dcurr, dend))
+                while (!RespWriteUtils.TryWriteBulkString(digest, ref dcurr, dend))
                     SendAndReset();
             }
 
@@ -245,7 +270,7 @@ namespace Garnet.server
         {
             if (!storeWrapper.serverOptions.EnableLua)
             {
-                while (!RespWriteUtils.WriteError(CmdStrings.RESP_ERR_LUA_DISABLED, ref dcurr, dend))
+                while (!RespWriteUtils.TryWriteError(CmdStrings.RESP_ERR_LUA_DISABLED, ref dcurr, dend))
                     SendAndReset();
 
                 return false;
@@ -266,7 +291,7 @@ namespace Garnet.server
             catch (Exception ex)
             {
                 logger?.LogError(ex, "Error executing Lua script");
-                while (!RespWriteUtils.WriteError("ERR " + ex.Message, ref dcurr, dend))
+                while (!RespWriteUtils.TryWriteError("ERR " + ex.Message, ref dcurr, dend))
                     SendAndReset();
             }
         }

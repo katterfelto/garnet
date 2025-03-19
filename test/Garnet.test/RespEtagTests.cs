@@ -208,6 +208,17 @@ namespace Garnet.test
             // confirm expiration retained -> TTL should exist
             ttl = db.KeyTimeToLive(key);
             ClassicAssert.IsTrue(ttl.HasValue);
+
+
+            // Scenario: smaller length update (IPU) of a key with existing etag should increment the ETAG and retain the expiration
+            res = db.Execute("SET", key, "oneofusoneofus", "EX", 10000);
+            // when no etag then count 0 as it's existing etag
+            updatedEtagRes = long.Parse(db.Execute("SETIFMATCH", key, "i", 0)[0].ToString());
+            ClassicAssert.AreEqual(1, updatedEtagRes);
+
+            // confirm expiration retained -> TTL should exist
+            ttl = db.KeyTimeToLive(key);
+            ClassicAssert.IsTrue(ttl.HasValue);
         }
 
         #endregion
@@ -322,9 +333,91 @@ namespace Garnet.test
             ClassicAssert.AreEqual(2, etag7);
         }
 
+        [Test]
+        public void SetIfGreaterWorksWithInitialETag()
+        {
+            using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());
+            IDatabase db = redis.GetDatabase(0);
+
+            var key = "meow-key";
+            var value = "m";
+
+            RedisResult res = db.Execute("SET", key, value, "WITHETAG");
+            ClassicAssert.AreEqual(1, (long)res);
+
+            // not greater etag sent so we expect a higher etag returned
+            RedisResult[] arrRes = (RedisResult[])db.Execute("SETIFGREATER", key, "diggity", 0);
+            ClassicAssert.AreEqual(1, (long)arrRes[0]);
+            ClassicAssert.AreEqual(value, arrRes[1].ToString());
+
+            // greater etag sent so we expect the same etag returned
+            var newValue = "meow";
+            arrRes = (RedisResult[])db.Execute("SETIFGREATER", key, newValue, 2);
+            ClassicAssert.AreEqual(3, (long)arrRes[0]);
+            ClassicAssert.IsTrue(arrRes[1].IsNull);
+
+            // shrink value size and send greater etag
+            newValue = "m";
+            arrRes = (RedisResult[])db.Execute("SETIFGREATER", key, newValue, 5);
+            ClassicAssert.AreEqual(6, (long)arrRes[0]);
+            ClassicAssert.IsTrue(arrRes[1].IsNull);
+        }
+
+        [Test]
+        public void SetIfGreaterWorksWithoutInitialETag()
+        {
+            using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());
+            IDatabase db = redis.GetDatabase(0);
+
+            var key = "meow-key";
+            var value = "m";
+
+            RedisResult res = db.Execute("SET", key, value);
+            ClassicAssert.AreEqual("OK", res.ToString());
+
+            // not greater etag sent so we expect a higher etag returned
+            RedisResult[] arrRes = (RedisResult[])db.Execute("SETIFGREATER", key, "check", 0);
+            ClassicAssert.AreEqual(0, (long)arrRes[0]);
+            ClassicAssert.AreEqual(value, arrRes[1].ToString());
+
+            // greater etag sent so we expect the same etag returned
+            var newValue = "meow";
+            arrRes = (RedisResult[])db.Execute("SETIFGREATER", key, newValue, 2);
+            ClassicAssert.AreEqual(3, (long)arrRes[0]);
+            ClassicAssert.IsTrue(arrRes[1].IsNull);
+
+            // shrink value size and send greater etag
+            newValue = "m";
+            arrRes = (RedisResult[])db.Execute("SETIFGREATER", key, newValue, 5);
+            ClassicAssert.AreEqual(6, (long)arrRes[0]);
+            ClassicAssert.IsTrue(arrRes[1].IsNull);
+        }
+
         #endregion
 
         # region Edgecases
+        [Test]
+        public void SetIfMatchSetsKeyValueOnNonExistingKey()
+        {
+            using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());
+            IDatabase db = redis.GetDatabase(0);
+
+            RedisResult[] result = (RedisResult[])db.Execute("SETIFMATCH", "key", "valueanother", 1, "EX", 3);
+            ClassicAssert.AreEqual(2, (long)result[0]);
+            ClassicAssert.IsTrue(result[1].IsNull);
+        }
+
+
+        [Test]
+        public void SetIfGreaterSetsKeyValueOnNonExistingKey()
+        {
+            using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());
+            IDatabase db = redis.GetDatabase(0);
+
+            RedisResult[] result = (RedisResult[])db.Execute("SETIFGREATER", "key", "valueanother", 1, "EX", 3);
+            ClassicAssert.AreEqual(2, (long)result[0]);
+            ClassicAssert.IsTrue(result[1].IsNull);
+        }
 
         [Test]
         public void SETOnAlreadyExistingSETDataOverridesItWithInitialEtag()
@@ -454,16 +547,34 @@ namespace Garnet.test
 
 
         [Test]
-        public void SetIfMatchOnNonEtagDataReturnsNewEtagAndValue()
+        public void SetIfMatchOnNonEtagDataReturnsNewEtagAndNoValue()
         {
             using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());
             IDatabase db = redis.GetDatabase(0);
 
             var _ = db.StringSet("h", "k");
 
-            var res = (RedisResult[])db.Execute("SETIFMATCH", ["h", "t", "2"]);
-            ClassicAssert.AreEqual("0", res[0].ToString());
-            ClassicAssert.AreEqual("k", res[1].ToString());
+            var res = (RedisResult[])db.Execute("SETIFMATCH", ["h", "t", "0"]);
+            ClassicAssert.AreEqual("1", res[0].ToString());
+            ClassicAssert.IsTrue(res[1].IsNull);
+        }
+
+        [Test]
+        public void SetIfMatchReturnsNewEtagButNoValueWhenUsingNoGet()
+        {
+            using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());
+            IDatabase db = redis.GetDatabase(0);
+
+            var _ = db.StringSet("h", "k");
+
+            var res = (RedisResult[])db.Execute("SETIFMATCH", "h", "t", "0", "NOGET");
+            ClassicAssert.AreEqual("1", res[0].ToString());
+            ClassicAssert.IsTrue(res[1].IsNull);
+
+            // ETag mismatch
+            res = (RedisResult[])db.Execute("SETIFMATCH", "h", "t", "2", "NOGET");
+            ClassicAssert.AreEqual("1", res[0].ToString());
+            ClassicAssert.IsTrue(res[1].IsNull);
         }
 
         [Test]
@@ -981,7 +1092,7 @@ namespace Garnet.test
             TearDown();
 
             TestUtils.DeleteDirectory(TestUtils.MethodTestDir, wait: true);
-            server = TestUtils.CreateGarnetServer(TestUtils.MethodTestDir, DisableObjects: true);
+            server = TestUtils.CreateGarnetServer(TestUtils.MethodTestDir, disableObjects: true);
             server.Start();
 
             var key = "delKey";
@@ -1014,7 +1125,7 @@ namespace Garnet.test
             TearDown();
 
             TestUtils.DeleteDirectory(TestUtils.MethodTestDir, wait: true);
-            server = TestUtils.CreateGarnetServer(TestUtils.MethodTestDir, lowMemory: true, DisableObjects: true);
+            server = TestUtils.CreateGarnetServer(TestUtils.MethodTestDir, lowMemory: true, disableObjects: true);
             server.Start();
             using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());
             var db = redis.GetDatabase(0);
@@ -1055,7 +1166,7 @@ namespace Garnet.test
             {
                 TearDown();
                 TestUtils.DeleteDirectory(TestUtils.MethodTestDir, wait: true);
-                server = TestUtils.CreateGarnetServer(TestUtils.MethodTestDir, DisableObjects: true);
+                server = TestUtils.CreateGarnetServer(TestUtils.MethodTestDir, disableObjects: true);
                 server.Start();
             }
 
@@ -1090,7 +1201,7 @@ namespace Garnet.test
             {
                 TearDown();
                 TestUtils.DeleteDirectory(TestUtils.MethodTestDir, wait: true);
-                server = TestUtils.CreateGarnetServer(TestUtils.MethodTestDir, DisableObjects: true);
+                server = TestUtils.CreateGarnetServer(TestUtils.MethodTestDir, disableObjects: true);
                 server.Start();
             }
 
@@ -1124,7 +1235,7 @@ namespace Garnet.test
             {
                 TearDown();
                 TestUtils.DeleteDirectory(TestUtils.MethodTestDir, wait: true);
-                server = TestUtils.CreateGarnetServer(TestUtils.MethodTestDir, DisableObjects: true);
+                server = TestUtils.CreateGarnetServer(TestUtils.MethodTestDir, disableObjects: true);
                 server.Start();
             }
             using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());

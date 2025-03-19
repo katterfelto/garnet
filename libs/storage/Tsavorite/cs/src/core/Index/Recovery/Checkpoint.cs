@@ -2,9 +2,7 @@
 // Licensed under the MIT license.
 
 using System;
-using System.Linq;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 
 namespace Tsavorite.core
@@ -43,8 +41,11 @@ namespace Tsavorite.core
 
         internal Task<LinkedCheckpointInfo> CheckpointTask => checkpointTcs.Task;
 
-        internal void CheckpointVersionShift(long oldVersion, long newVersion)
-            => checkpointManager.CheckpointVersionShift(oldVersion, newVersion);
+        internal void CheckpointVersionShiftStart(long oldVersion, long newVersion, bool isStreaming)
+            => checkpointManager.CheckpointVersionShiftStart(oldVersion, newVersion, isStreaming);
+
+        internal void CheckpointVersionShiftEnd(long oldVersion, long newVersion, bool isStreaming)
+            => checkpointManager.CheckpointVersionShiftEnd(oldVersion, newVersion, isStreaming);
 
         internal void WriteHybridLogMetaInfo()
         {
@@ -55,6 +56,11 @@ namespace Tsavorite.core
                 metadata = [.. metadata, .. Encoding.Default.GetBytes(convertedCookie)];
             }
             checkpointManager.CommitLogCheckpoint(_hybridLogCheckpointToken, metadata);
+        }
+
+        internal void CleanupLogCheckpoint()
+        {
+            checkpointManager.CleanupLogCheckpoint(_hybridLogCheckpointToken);
             Log.ShiftBeginAddress(_hybridLogCheckpoint.info.beginAddress, truncateLog: true);
         }
 
@@ -67,7 +73,11 @@ namespace Tsavorite.core
                 metadata = [.. metadata, .. Encoding.Default.GetBytes(convertedCookie)];
             }
             checkpointManager.CommitLogIncrementalCheckpoint(_hybridLogCheckpointToken, _hybridLogCheckpoint.info.version, metadata, deltaLog);
-            Log.ShiftBeginAddress(_hybridLogCheckpoint.info.beginAddress, truncateLog: true);
+        }
+
+        internal void CleanupLogIncrementalCheckpoint()
+        {
+            checkpointManager.CleanupLogIncrementalCheckpoint(_hybridLogCheckpointToken);
         }
 
         internal void WriteIndexMetaInfo()
@@ -75,10 +85,9 @@ namespace Tsavorite.core
             checkpointManager.CommitIndexCheckpoint(_indexCheckpointToken, _indexCheckpoint.info.ToByteArray());
         }
 
-        internal bool ObtainCurrentTailAddress(ref long location)
+        internal void CleanupIndexCheckpoint()
         {
-            var tailAddress = hlogBase.GetTailAddress();
-            return Interlocked.CompareExchange(ref location, tailAddress, 0) == 0;
+            checkpointManager.CleanupIndexCheckpoint(_indexCheckpointToken);
         }
 
         internal void InitializeIndexCheckpoint(Guid indexToken)
@@ -89,7 +98,6 @@ namespace Tsavorite.core
         internal void InitializeHybridLogCheckpoint(Guid hybridLogToken, long version)
         {
             _hybridLogCheckpoint.Initialize(hybridLogToken, version, checkpointManager);
-            _hybridLogCheckpoint.info.manualLockingActive = hlogBase.NumActiveLockingSessions > 0;
         }
 
         internal long Compact<T1, T2, T3, T4, CompactionFunctions>(ISessionFunctions<TKey, TValue, object, object, object> functions, CompactionFunctions compactionFunctions, long untilAddress, CompactionType compactionType)

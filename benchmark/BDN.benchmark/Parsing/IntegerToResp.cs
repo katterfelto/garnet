@@ -35,7 +35,7 @@ namespace BDN.benchmark.Parsing
         public bool WriteInt32(int value)
         {
             var startPtr = _bufferPtr;
-            return RespWriteUtils.WriteInteger(value, ref startPtr, _bufferPtr + _buffer.Length);
+            return RespWriteUtils.TryWriteInt32(value, ref startPtr, _bufferPtr + _buffer.Length);
         }
 
         [Benchmark]
@@ -43,7 +43,7 @@ namespace BDN.benchmark.Parsing
         public bool WriteInt64(long value)
         {
             var startPtr = _bufferPtr;
-            return RespWriteUtils.WriteInteger(value, ref startPtr, _bufferPtr + _buffer.Length);
+            return RespWriteUtils.TryWriteInt64(value, ref startPtr, _bufferPtr + _buffer.Length);
         }
 
         [Benchmark]
@@ -51,7 +51,7 @@ namespace BDN.benchmark.Parsing
         public bool WriteInt32AsBulkString(int value)
         {
             var startPtr = _bufferPtr;
-            return RespWriteUtils.WriteIntegerAsBulkString(value, ref startPtr, _bufferPtr + _buffer.Length);
+            return RespWriteUtils.TryWriteInt32AsBulkString(value, ref startPtr, _bufferPtr + _buffer.Length);
         }
 
         [Benchmark]
@@ -60,7 +60,7 @@ namespace BDN.benchmark.Parsing
             for (int i = 0; i < SignedInt32MultiplesOfTen.Length; i++)
             {
                 var startPtr = _bufferPtr;
-                RespWriteUtils.WriteInteger(SignedInt32MultiplesOfTen[i], ref startPtr, _bufferPtr + _buffer.Length);
+                RespWriteUtils.TryWriteInt32(SignedInt32MultiplesOfTen[i], ref startPtr, _bufferPtr + _buffer.Length);
             }
         }
 
@@ -70,7 +70,7 @@ namespace BDN.benchmark.Parsing
             for (int i = 0; i < SignedInt64MultiplesOfTen.Length; i++)
             {
                 var startPtr = _bufferPtr;
-                RespWriteUtils.WriteInteger(SignedInt64MultiplesOfTen[i], ref startPtr, _bufferPtr + _buffer.Length);
+                RespWriteUtils.TryWriteInt64(SignedInt64MultiplesOfTen[i], ref startPtr, _bufferPtr + _buffer.Length);
             }
         }
 
@@ -80,7 +80,7 @@ namespace BDN.benchmark.Parsing
             for (int i = 0; i < SignedInt32MultiplesOfTen.Length; i++)
             {
                 var startPtr = _bufferPtr;
-                RespWriteUtils.WriteIntegerAsBulkString(SignedInt32MultiplesOfTen[i], ref startPtr, _bufferPtr + _buffer.Length);
+                RespWriteUtils.TryWriteInt32AsBulkString(SignedInt32MultiplesOfTen[i], ref startPtr, _bufferPtr + _buffer.Length);
             }
         }
 
@@ -92,14 +92,14 @@ namespace BDN.benchmark.Parsing
             .. UnsignedInt32MultiplesOfTen.Select(n => n * -1),
             .. UnsignedInt32MultiplesOfTen
         ];
-        public static int[] UnsignedInt32MultiplesOfTen => Enumerable.Range(0, 10).Select(n => (int)Math.Pow(10, n)).ToArray();
+        public static int[] UnsignedInt32MultiplesOfTen => [.. Enumerable.Range(0, 10).Select(n => (int)Math.Pow(10, n))];
 
         // All multiples of 10 from 10^-19 to 10^19
         public static long[] SignedInt64MultiplesOfTen => [
             .. UnsignedInt64MultiplesOfTen.Select(n => n * -1),
             .. UnsignedInt64MultiplesOfTen
         ];
-        public static long[] UnsignedInt64MultiplesOfTen => Enumerable.Range(0, 19).Select(n => (long)Math.Pow(10, n)).ToArray();
+        public static long[] UnsignedInt64MultiplesOfTen => [.. Enumerable.Range(0, 19).Select(n => (long)Math.Pow(10, n))];
 
         public static int[] SignedInt32Values => [int.MinValue, -1, 0, int.MaxValue];
         public static long[] SignedInt64Values => [long.MinValue, -1, 0, long.MaxValue];

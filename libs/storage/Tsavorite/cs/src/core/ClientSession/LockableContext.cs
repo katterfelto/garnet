@@ -37,7 +37,10 @@ namespace Tsavorite.core
         public void BeginLockable() => clientSession.AcquireLockable(sessionFunctions);
 
         /// <inheritdoc/>
-        public void EndLockable() => clientSession.ReleaseLockable();
+        public void LocksAcquired(long txnVersion) => clientSession.LocksAcquired(sessionFunctions, txnVersion);
+
+        /// <inheritdoc/>
+        public void EndLockable() => clientSession.ReleaseLockable(sessionFunctions);
 
         #endregion Begin/EndLockable
 
@@ -236,7 +239,7 @@ namespace Tsavorite.core
         public void Lock<TLockableKey>(TLockableKey[] keys, int start, int count)
             where TLockableKey : ILockableKey
         {
-            clientSession.CheckIsAcquiredLockable();
+            clientSession.CheckIsAcquiredLockable(sessionFunctions);
             Debug.Assert(!clientSession.store.epoch.ThisInstanceProtected(), "Trying to protect an already-protected epoch for LockableUnsafeContext.Lock()");
             bool lockAquired = false;
             while (!lockAquired)
@@ -287,7 +290,7 @@ namespace Tsavorite.core
         public bool TryLock<TLockableKey>(TLockableKey[] keys, int start, int count, TimeSpan timeout, CancellationToken cancellationToken)
             where TLockableKey : ILockableKey
         {
-            clientSession.CheckIsAcquiredLockable();
+            clientSession.CheckIsAcquiredLockable(sessionFunctions);
             Debug.Assert(!clientSession.store.epoch.ThisInstanceProtected(), "Trying to protect an already-protected epoch for LockableUnsafeContext.Lock()");
 
             clientSession.UnsafeResumeThread(sessionFunctions);
@@ -320,7 +323,7 @@ namespace Tsavorite.core
         public bool TryPromoteLock<TLockableKey>(TLockableKey key, TimeSpan timeout, CancellationToken cancellationToken)
             where TLockableKey : ILockableKey
         {
-            clientSession.CheckIsAcquiredLockable();
+            clientSession.CheckIsAcquiredLockable(sessionFunctions);
             Debug.Assert(!clientSession.store.epoch.ThisInstanceProtected(), "Trying to protect an already-protected epoch for LockableUnsafeContext.Lock()");
 
             clientSession.UnsafeResumeThread(sessionFunctions);
@@ -341,7 +344,7 @@ namespace Tsavorite.core
         public void Unlock<TLockableKey>(TLockableKey[] keys, int start, int count)
             where TLockableKey : ILockableKey
         {
-            clientSession.CheckIsAcquiredLockable();
+            clientSession.CheckIsAcquiredLockable(sessionFunctions);
             Debug.Assert(!clientSession.store.epoch.ThisInstanceProtected(), "Trying to protect an already-protected epoch for LockableUnsafeContext.Unlock()");
 
             clientSession.UnsafeResumeThread(sessionFunctions);

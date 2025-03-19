@@ -1,7 +1,6 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-using System;
 using System.Buffers;
 using System.Diagnostics;
 using Garnet.server;
@@ -22,7 +21,6 @@ namespace Garnet
             var valueArg = GetNextArg(ref input, ref offset).ToArray();
 
             _ = ((MyDict)value).Set(keyArg, valueArg);
-            WriteSimpleString(ref output, "OK");
             return true;
         }
     }

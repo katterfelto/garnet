@@ -3,10 +3,7 @@
 
 using System;
 using System.Diagnostics;
-using System.Text;
-using System.Threading.Tasks;
 using Garnet.common;
-using Microsoft.Extensions.Logging;
 using Tsavorite.core;
 
 namespace Garnet.server
@@ -26,7 +23,7 @@ namespace Garnet.server
             Debug.Assert(parseState.Count == 1);
 
             var key = parseState.GetArgSliceByRef(0).SpanByte;
-            var input = new RawStringInput(RespCommand.GETWITHETAG, ref parseState, startIdx: 1);
+            var input = new RawStringInput(RespCommand.GETWITHETAG);
             var output = new SpanByteAndMemory(dcurr, (int)(dend - dcurr));
             var status = storageApi.GET(ref key, ref input, ref output);
 
@@ -34,7 +31,7 @@ namespace Garnet.server
             {
                 case GarnetStatus.NOTFOUND:
                     Debug.Assert(output.IsSpanByte);
-                    while (!RespWriteUtils.WriteDirect(CmdStrings.RESP_ERRNOTFOUND, ref dcurr, dend))
+                    while (!RespWriteUtils.TryWriteDirect(CmdStrings.RESP_ERRNOTFOUND, ref dcurr, dend))
                         SendAndReset();
                     break;
                 default:
@@ -66,7 +63,7 @@ namespace Garnet.server
             {
                 case GarnetStatus.NOTFOUND:
                     Debug.Assert(output.IsSpanByte);
-                    while (!RespWriteUtils.WriteDirect(CmdStrings.RESP_ERRNOTFOUND, ref dcurr, dend))
+                    while (!RespWriteUtils.TryWriteDirect(CmdStrings.RESP_ERRNOTFOUND, ref dcurr, dend))
                         SendAndReset();
                     break;
                 default:
@@ -80,9 +77,11 @@ namespace Garnet.server
             return true;
         }
 
+
         /// <summary>
-        /// SETIFMATCH key val etag EX|PX expiry
-        /// Sets a key value pair only if the already existing etag matches the etag sent as a part of the request.
+        /// SETIFMATCH key val etag [EX|PX] [expiry] [NOGET]
+        /// Sets a key value pair with the given etag only if (1) the etag given in the request matches the already existing etag ;
+        /// or (2) there was no existing value; or (3) the existing value was not associated with any etag and the sent Etag was 0.
         /// </summary>
         /// <typeparam name="TGarnetApi"></typeparam>
         /// <param name="storageApi"></param>
@@ -90,96 +89,105 @@ namespace Garnet.server
         private bool NetworkSETIFMATCH<TGarnetApi>(ref TGarnetApi storageApi)
             where TGarnetApi : IGarnetApi
         {
-            if (parseState.Count < 3 || parseState.Count > 5)
+            return NetworkSetETagConditional(RespCommand.SETIFMATCH, ref storageApi);
+        }
+
+
+        /// <summary>
+        /// SETIFGREATER key val etag [EX|PX] [expiry] [NOGET]
+        /// Sets a key value pair with the given etag only if (1) the etag given in the request is greater than the already existing etag ;
+        /// or (2) there was no existing value; or (3) the existing value was not associated with any etag.
+        /// </summary>
+        /// <typeparam name="TGarnetApi"></typeparam>
+        /// <param name="storageApi"></param>
+        /// <returns></returns>
+        private bool NetworkSETIFGREATER<TGarnetApi>(ref TGarnetApi storageApi)
+            where TGarnetApi : IGarnetApi
+        {
+            return NetworkSetETagConditional(RespCommand.SETIFGREATER, ref storageApi);
+        }
+
+        private bool NetworkSetETagConditional<TGarnetApi>(RespCommand cmd, ref TGarnetApi storageApi)
+            where TGarnetApi : IGarnetApi
+        {
+            // Currently only supports these two commands
+            Debug.Assert(cmd is RespCommand.SETIFMATCH or RespCommand.SETIFGREATER);
+
+            if (parseState.Count < 3 || parseState.Count > 6)
             {
-                return AbortWithWrongNumberOfArguments(nameof(RespCommand.SETIFMATCH));
+                return AbortWithWrongNumberOfArguments(nameof(cmd));
             }
 
-            // SETIFMATCH Args: KEY VAL ETAG -> [ ((EX || PX) expiration)]
             int expiry = 0;
             ReadOnlySpan<byte> errorMessage = default;
-            var expOption = ExpirationOption.None;
-
             var tokenIdx = 3;
-            Span<byte> nextOpt = default;
-            var optUpperCased = false;
-            while (tokenIdx < parseState.Count || optUpperCased)
+
+            ExpirationOption expOption = ExpirationOption.None;
+            bool noGet = false;
+
+            while (tokenIdx < parseState.Count)
             {
-                if (!optUpperCased)
+                // Parse NOGET option
+                if (parseState.GetArgSliceByRef(tokenIdx).Span.EqualsUpperCaseSpanIgnoringCase(CmdStrings.NOGET))
                 {
-                    nextOpt = parseState.GetArgSliceByRef(tokenIdx++).Span;
-                }
-
-                if (nextOpt.SequenceEqual(CmdStrings.EX))
-                {
-                    // Validate expiry
-                    if (!parseState.TryGetInt(tokenIdx++, out expiry))
-                    {
-                        errorMessage = CmdStrings.RESP_ERR_GENERIC_VALUE_IS_NOT_INTEGER;
-                        break;
-                    }
-
-                    if (expOption != ExpirationOption.None)
+                    if (noGet)
                     {
                         errorMessage = CmdStrings.RESP_ERR_GENERIC_SYNTAX_ERROR;
                         break;
                     }
 
-                    expOption = ExpirationOption.EX;
-                    if (expiry <= 0)
-                    {
-                        errorMessage = CmdStrings.RESP_ERR_GENERIC_INVALIDEXP_IN_SET;
-                        break;
-                    }
+                    noGet = true;
+                    tokenIdx++;
+                    continue;
                 }
-                else if (nextOpt.SequenceEqual(CmdStrings.PX))
-                {
-                    // Validate expiry
-                    if (!parseState.TryGetInt(tokenIdx++, out expiry))
-                    {
-                        errorMessage = CmdStrings.RESP_ERR_GENERIC_VALUE_IS_NOT_INTEGER;
-                        break;
-                    }
 
-                    if (expOption != ExpirationOption.None)
+                // Parse EX | PX expiry combination
+                if (parseState.TryGetExpirationOption(tokenIdx, out expOption))
+                {
+                    if (expOption is not ExpirationOption.EX and not ExpirationOption.PX)
                     {
                         errorMessage = CmdStrings.RESP_ERR_GENERIC_SYNTAX_ERROR;
                         break;
                     }
 
-                    expOption = ExpirationOption.PX;
-                    if (expiry <= 0)
+                    // we know that the token is either EX or PX from above and the next value should be the expiry
+                    tokenIdx++;
+                    if (!parseState.TryGetInt(tokenIdx, out expiry))
+                    {
+                        errorMessage = CmdStrings.RESP_ERR_GENERIC_VALUE_IS_NOT_INTEGER;
+                        break;
+                    }
+                    else if (expiry <= 0)
                     {
                         errorMessage = CmdStrings.RESP_ERR_GENERIC_INVALIDEXP_IN_SET;
                         break;
                     }
-                }
-                else
-                {
-                    if (!optUpperCased)
-                    {
-                        AsciiUtils.ToUpperInPlace(nextOpt);
-                        optUpperCased = true;
-                        continue;
-                    }
 
-                    errorMessage = CmdStrings.RESP_ERR_GENERIC_UNK_CMD;
-                    break;
+                    tokenIdx++;
+                    continue;
                 }
 
-                optUpperCased = false;
+                // neither NOGET nor EX|PX expiry combination
+                errorMessage = CmdStrings.RESP_ERR_GENERIC_SYNTAX_ERROR;
+                break;
+            }
+
+            bool etagRead = parseState.TryGetLong(2, out long etag);
+            if (!etagRead || etag < 0)
+            {
+                errorMessage = CmdStrings.RESP_ERR_INVALID_ETAG;
             }
 
             if (!errorMessage.IsEmpty)
             {
-                while (!RespWriteUtils.WriteError(errorMessage, ref dcurr, dend))
+                while (!RespWriteUtils.TryWriteError(errorMessage, ref dcurr, dend))
                     SendAndReset();
                 return true;
             }
 
             SpanByte key = parseState.GetArgSliceByRef(0).SpanByte;
 
-            NetworkSET_Conditional(RespCommand.SETIFMATCH, expiry, ref key, getValue: true, highPrecision: expOption == ExpirationOption.PX, withEtag: true, ref storageApi);
+            NetworkSET_Conditional(cmd, expiry, ref key, getValue: !noGet, highPrecision: expOption == ExpirationOption.PX, withEtag: true, ref storageApi);
 
             return true;
         }

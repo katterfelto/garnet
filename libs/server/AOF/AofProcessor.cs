@@ -4,6 +4,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Garnet.common;
@@ -78,6 +79,7 @@ namespace Garnet.server
                 storeWrapper.customCommandManager,
                 recordToAof ? storeWrapper.appendOnlyFile : null,
                 storeWrapper.serverOptions,
+                storeWrapper.subscribeBroker,
                 accessControlList: storeWrapper.accessControlList,
                 loggerFactory: storeWrapper.loggerFactory);
 
@@ -157,21 +159,33 @@ namespace Garnet.server
             }
         }
 
-        internal unsafe void ProcessAofRecord(IMemoryOwner<byte> entry, int length, bool asReplica = false)
+        internal unsafe void ProcessAofRecord(IMemoryOwner<byte> entry, int length)
         {
             fixed (byte* ptr = entry.Memory.Span)
             {
-                ProcessAofRecordInternal(ptr, length, asReplica);
+                ProcessAofRecordInternal(ptr, length, false, out _);
             }
             entry.Dispose();
         }
 
         /// <summary>
+        /// Fuzzy region of AOF is the region between the checkpoint start and end commit markers.
+        /// This regions can contain entries in both (v) and (v+1) versions. The processing logic is:
+        /// 1) Process (v) entries as is.
+        /// 2) Store aware the (v+1) entries in a buffer.
+        /// 3) At the end of the fuzzy region, take a checkpoint
+        /// 4) Finally, replay the buffered (v+1) entries.
+        /// </summary>
+        bool inFuzzyRegion = false;
+        List<byte[]> fuzzyRegionBuffer = new();
+
+        /// <summary>
         /// Process AOF record
         /// </summary>
-        public unsafe void ProcessAofRecordInternal(byte* ptr, int length, bool asReplica = false)
+        public unsafe void ProcessAofRecordInternal(byte* ptr, int length, bool asReplica, out bool isCheckpointStart)
         {
             AofHeader header = *(AofHeader*)ptr;
+            isCheckpointStart = false;
 
             if (inflightTxns.ContainsKey(header.sessionID))
             {
@@ -182,9 +196,16 @@ namespace Garnet.server
                         inflightTxns.Remove(header.sessionID);
                         break;
                     case AofEntryType.TxnCommit:
-                        ProcessTxn(inflightTxns[header.sessionID]);
-                        inflightTxns[header.sessionID].Clear();
-                        inflightTxns.Remove(header.sessionID);
+                        if (inFuzzyRegion)
+                        {
+                            fuzzyRegionBuffer.Add(new ReadOnlySpan<byte>(ptr, length).ToArray());
+                        }
+                        else
+                        {
+                            ProcessTxn(inflightTxns[header.sessionID], asReplica);
+                            inflightTxns[header.sessionID].Clear();
+                            inflightTxns.Remove(header.sessionID);
+                        }
                         break;
                     case AofEntryType.StoredProcedure:
                         throw new GarnetException($"Unexpected AOF header operation type {header.opType} within transaction");
@@ -198,7 +219,7 @@ namespace Garnet.server
             switch (header.opType)
             {
                 case AofEntryType.TxnStart:
-                    inflightTxns[header.sessionID] = new List<byte[]>();
+                    inflightTxns[header.sessionID] = [];
                     break;
                 case AofEntryType.TxnAbort:
                 case AofEntryType.TxnCommit:
@@ -206,22 +227,84 @@ namespace Garnet.server
                     // after a checkpoint, and the transaction belonged to the previous version. It can safely
                     // be ignored.
                     break;
-                case AofEntryType.MainStoreCheckpointCommit:
-                    if (asReplica)
+                case AofEntryType.CheckpointStartCommit:
+                    // Inform caller that we processed a checkpoint start marker so that it can record ReplicationCheckpointStartOffset if this is a replica replay
+                    isCheckpointStart = true;
+                    if (header.aofHeaderVersion > 1)
                     {
-                        if (header.storeVersion > storeWrapper.store.CurrentVersion)
-                            storeWrapper.TakeCheckpoint(false, StoreType.Main, logger);
+                        if (inFuzzyRegion)
+                        {
+                            logger?.LogInformation("Encountered new CheckpointStartCommit before prior CheckpointEndCommit. Clearing {fuzzyRegionBufferCount} records from previous fuzzy region", fuzzyRegionBuffer.Count);
+                            fuzzyRegionBuffer.Clear();
+                        }
+                        inFuzzyRegion = true;
+                    }
+                    else
+                    {
+                        // We are parsing the old AOF format: take checkpoint immediately as we do not have a fuzzy region
+                        // Note: we will not truncate the AOF as ReplicationCheckpointStartOffset is not set
+                        // Once a new checkpoint is transferred, the replica will truncate the AOF.
+                        if (asReplica && header.storeVersion > storeWrapper.store.CurrentVersion)
+                            _ = storeWrapper.TakeCheckpoint(false, logger);
                     }
                     break;
-                case AofEntryType.ObjectStoreCheckpointCommit:
-                    if (asReplica)
+                case AofEntryType.ObjectStoreCheckpointStartCommit:
+                    // With unified checkpoint, we do not need to handle object store checkpoint separately
+                    break;
+                case AofEntryType.CheckpointEndCommit:
+                    if (header.aofHeaderVersion > 1)
                     {
-                        if (header.storeVersion > storeWrapper.objectStore.CurrentVersion)
-                            storeWrapper.TakeCheckpoint(false, StoreType.Object, logger);
+                        if (!inFuzzyRegion)
+                        {
+                            logger?.LogInformation("Encountered CheckpointEndCommit without a prior CheckpointStartCommit - ignoring");
+                        }
+                        else
+                        {
+                            inFuzzyRegion = false;
+                            // Take checkpoint after the fuzzy region
+                            if (asReplica && header.storeVersion > storeWrapper.store.CurrentVersion)
+                                _ = storeWrapper.TakeCheckpoint(false, logger);
+                            // Process buffered records
+                            if (fuzzyRegionBuffer.Count > 0)
+                            {
+                                logger?.LogInformation("Replaying {fuzzyRegionBufferCount} records from fuzzy region for checkpoint {newVersion}", fuzzyRegionBuffer.Count, storeWrapper.store.CurrentVersion);
+                            }
+                            foreach (var entry in fuzzyRegionBuffer)
+                            {
+                                fixed (byte* entryPtr = entry)
+                                    ReplayOp(entryPtr, entry.Length, asReplica);
+                            }
+                            fuzzyRegionBuffer.Clear();
+                        }
                     }
+                    break;
+                case AofEntryType.ObjectStoreCheckpointEndCommit:
+                    // With unified checkpoint, we do not need to handle object store checkpoint separately
+                    break;
+                case AofEntryType.MainStoreStreamingCheckpointStartCommit:
+                    Debug.Assert(storeWrapper.serverOptions.ReplicaDisklessSync);
+                    if (asReplica && header.storeVersion > storeWrapper.store.CurrentVersion)
+                        storeWrapper.store.SetVersion(header.storeVersion);
+                    break;
+                case AofEntryType.MainStoreStreamingCheckpointEndCommit:
+                    Debug.Assert(storeWrapper.serverOptions.ReplicaDisklessSync);
+                    break;
+                case AofEntryType.ObjectStoreStreamingCheckpointStartCommit:
+                    Debug.Assert(storeWrapper.serverOptions.ReplicaDisklessSync);
+                    if (asReplica && header.storeVersion > storeWrapper.store.CurrentVersion)
+                        storeWrapper.objectStore.SetVersion(header.storeVersion);
+                    break;
+                case AofEntryType.FlushAll:
+                    storeWrapper.ExecuteFlushDb(RespCommand.FLUSHALL, unsafeTruncateLog: header.unsafeTruncateLog == 1, databaseId: header.databaseId);
+                    break;
+                case AofEntryType.FlushDb:
+                    storeWrapper.ExecuteFlushDb(RespCommand.FLUSHDB, unsafeTruncateLog: header.unsafeTruncateLog == 1, databaseId: header.databaseId);
+                    break;
+                case AofEntryType.ObjectStoreStreamingCheckpointEndCommit:
+                    Debug.Assert(storeWrapper.serverOptions.ReplicaDisklessSync);
                     break;
                 default:
-                    ReplayOp(ptr);
+                    ReplayOp(ptr, length, asReplica);
                     break;
             }
         }
@@ -231,21 +314,22 @@ namespace Garnet.server
         /// Assumes that operations arg does not contain transaction markers (i.e. TxnStart,TxnCommit,TxnAbort)
         /// </summary>
         /// <param name="operations"></param>
-        private unsafe void ProcessTxn(List<byte[]> operations)
+        /// <param name="asReplica"></param>
+        private unsafe void ProcessTxn(List<byte[]> operations, bool asReplica)
         {
             foreach (byte[] entry in operations)
             {
                 fixed (byte* ptr = entry)
-                    ReplayOp(ptr);
+                    ReplayOp(ptr, entry.Length, asReplica);
             }
         }
 
-        private unsafe bool ReplayOp(byte* entryPtr)
+        private unsafe bool ReplayOp(byte* entryPtr, int length, bool asReplica)
         {
             AofHeader header = *(AofHeader*)entryPtr;
 
-            // Skips versions that were part of checkpoint
-            if (SkipRecord(header)) return false;
+            // Skips (1) entries with versions that were part of prior checkpoint; and (2) future entries in fuzzy region
+            if (SkipRecord(entryPtr, length, asReplica)) return false;
 
             switch (header.opType)
             {
@@ -344,10 +428,10 @@ namespace Garnet.server
             ref var value = ref Unsafe.AsRef<SpanByte>(ptr + sizeof(AofHeader) + key.TotalSize);
             var valB = garnetObjectSerializer.Deserialize(value.ToByteArray());
 
-            var output = new GarnetObjectStoreOutput { spanByteAndMemory = new(outputPtr, outputLength) };
+            var output = new GarnetObjectStoreOutput { SpanByteAndMemory = new(outputPtr, outputLength) };
             basicContext.Upsert(ref keyB, ref valB);
-            if (!output.spanByteAndMemory.IsSpanByte)
-                output.spanByteAndMemory.Memory.Dispose();
+            if (!output.SpanByteAndMemory.IsSpanByte)
+                output.SpanByteAndMemory.Memory.Dispose();
         }
 
         static unsafe void ObjectStoreRMW(BasicContext<byte[], IGarnetObject, ObjectInput, GarnetObjectStoreOutput, long, ObjectSessionFunctions, ObjectStoreFunctions, ObjectStoreAllocator> basicContext,
@@ -364,12 +448,12 @@ namespace Garnet.server
             objectStoreInput.DeserializeFrom(curr);
 
             // Call RMW with the reconstructed key & ObjectInput
-            var output = new GarnetObjectStoreOutput { spanByteAndMemory = new(outputPtr, outputLength) };
+            var output = new GarnetObjectStoreOutput { SpanByteAndMemory = new(outputPtr, outputLength) };
             if (basicContext.RMW(ref keyB, ref objectStoreInput, ref output).IsPending)
                 basicContext.CompletePending(true);
 
-            if (!output.spanByteAndMemory.IsSpanByte)
-                output.spanByteAndMemory.Memory.Dispose();
+            if (!output.SpanByteAndMemory.IsSpanByte)
+                output.SpanByteAndMemory.Memory.Dispose();
         }
 
         static unsafe void ObjectStoreDelete(BasicContext<byte[], IGarnetObject, ObjectInput, GarnetObjectStoreOutput, long, ObjectSessionFunctions, ObjectStoreFunctions, ObjectStoreAllocator> basicContext, byte* ptr)
@@ -382,20 +466,50 @@ namespace Garnet.server
         /// <summary>
         /// On recovery apply records with header.version greater than CurrentVersion.
         /// </summary>
-        /// <param name="header"></param>
+        /// <param name="entryPtr"></param>
+        /// <param name="length"></param>
+        /// <param name="asReplica"></param>
         /// <returns></returns>
         /// <exception cref="GarnetException"></exception>
-        bool SkipRecord(AofHeader header)
+        bool SkipRecord(byte* entryPtr, int length, bool asReplica)
         {
-            AofStoreType storeType = ToAofStoreType(header.opType);
+            var header = *(AofHeader*)entryPtr;
+            return (asReplica && inFuzzyRegion) ? // Buffer logic only for AOF version > 1
+                BufferNewVersionRecord(header, entryPtr, length) :
+                IsOldVersionRecord(header);
+        }
+
+        bool BufferNewVersionRecord(AofHeader header, byte* entryPtr, int length)
+        {
+            if (IsNewVersionRecord(header))
+            {
+                fuzzyRegionBuffer.Add(new ReadOnlySpan<byte>(entryPtr, length).ToArray());
+                return true;
+            }
+            return false;
+        }
+
+        bool IsOldVersionRecord(AofHeader header)
+        {
+            var storeType = ToAofStoreType(header.opType);
 
             return storeType switch
             {
-                AofStoreType.MainStoreType => header.storeVersion <= storeWrapper.store.CurrentVersion - 1,
-                AofStoreType.ObjectStoreType => header.storeVersion <= storeWrapper.objectStore.CurrentVersion - 1,
-                AofStoreType.TxnType => false,
-                AofStoreType.ReplicationType => false,
-                AofStoreType.CheckpointType => false,
+                AofStoreType.MainStoreType => header.storeVersion < storeWrapper.store.CurrentVersion,
+                AofStoreType.ObjectStoreType => header.storeVersion < storeWrapper.objectStore.CurrentVersion,
+                AofStoreType.TxnType => header.storeVersion < storeWrapper.objectStore.CurrentVersion,
+                _ => throw new GarnetException($"Unexpected AOF header store type {storeType}"),
+            };
+        }
+
+        bool IsNewVersionRecord(AofHeader header)
+        {
+            var storeType = ToAofStoreType(header.opType);
+            return storeType switch
+            {
+                AofStoreType.MainStoreType => header.storeVersion > storeWrapper.store.CurrentVersion,
+                AofStoreType.ObjectStoreType => header.storeVersion > storeWrapper.objectStore.CurrentVersion,
+                AofStoreType.TxnType => header.storeVersion > storeWrapper.objectStore.CurrentVersion,
                 _ => throw new GarnetException($"Unknown AOF header store type {storeType}"),
             };
         }
@@ -407,7 +521,9 @@ namespace Garnet.server
                 AofEntryType.StoreUpsert or AofEntryType.StoreRMW or AofEntryType.StoreDelete => AofStoreType.MainStoreType,
                 AofEntryType.ObjectStoreUpsert or AofEntryType.ObjectStoreRMW or AofEntryType.ObjectStoreDelete => AofStoreType.ObjectStoreType,
                 AofEntryType.TxnStart or AofEntryType.TxnCommit or AofEntryType.TxnAbort or AofEntryType.StoredProcedure => AofStoreType.TxnType,
-                AofEntryType.MainStoreCheckpointCommit or AofEntryType.ObjectStoreCheckpointCommit => AofStoreType.CheckpointType,
+                AofEntryType.CheckpointStartCommit or AofEntryType.ObjectStoreCheckpointStartCommit or AofEntryType.MainStoreStreamingCheckpointStartCommit or AofEntryType.ObjectStoreStreamingCheckpointStartCommit => AofStoreType.CheckpointType,
+                AofEntryType.CheckpointEndCommit or AofEntryType.ObjectStoreCheckpointEndCommit or AofEntryType.MainStoreStreamingCheckpointEndCommit or AofEntryType.ObjectStoreStreamingCheckpointEndCommit => AofStoreType.CheckpointType,
+                AofEntryType.FlushAll or AofEntryType.FlushDb => AofStoreType.FlushDbType,
                 _ => throw new GarnetException($"Conversion to AofStoreType not possible for {type}"),
             };
         }

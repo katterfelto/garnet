@@ -851,13 +851,11 @@ namespace Garnet.test
 
             var response = lightClientRequest.SendCommands("LRANGE mylist 0 -1", "PING", 4, 1);
             var expectedResponse = "*3\r\n$5\r\nHello\r\n$3\r\nfoo\r\n$3\r\nbar\r\n+PONG\r\n";
-            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
 
             response = lightClientRequest.SendCommands("LRANGE mylist 5 10", "PING", 1, 1);
             expectedResponse = "*0\r\n+PONG\r\n";
-            actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         [Test]
@@ -867,8 +865,7 @@ namespace Garnet.test
             var response = lightClientRequest.SendCommands("LINSERT mykey BEFORE \"hola\" \"bye\"", "PING", 1, 1);
             //0 if key does not exist
             var expectedResponse = ":0\r\n+PONG\r\n";
-            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         [Test]
@@ -877,8 +874,7 @@ namespace Garnet.test
             using var lightClientRequest = TestUtils.CreateRequest();
             var response = lightClientRequest.SendCommands("LINSERT mykey", "PING", 1, 1);
             var expectedResponse = $"-{string.Format(CmdStrings.GenericErrWrongNumArgs, "LINSERT")}\r\n+PONG\r\n";
-            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         [Test]
@@ -889,18 +885,15 @@ namespace Garnet.test
             lightClientRequest.SendCommand("RPUSH mylist two");
             var response = lightClientRequest.SendCommand("RPUSH mylist three");
             var expectedResponse = ":3\r\n";
-            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
 
             response = lightClientRequest.SendCommand("LTRIM mylist 1 -1");
             expectedResponse = "+OK\r\n";
-            actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
 
             response = lightClientRequest.SendCommand("LRANGE mylist 0 -1", 3);
             expectedResponse = "*2\r\n$3\r\ntwo\r\n$5\r\nthree\r\n";
-            actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         [Test]
@@ -912,24 +905,20 @@ namespace Garnet.test
             // Use Before
             var response = lightClientRequest.SendCommand("LINSERT mylist BEFORE World There");
             var expectedResponse = ":3\r\n";
-            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
 
             response = lightClientRequest.SendCommand("LRANGE mylist 0 -1", 4);
             expectedResponse = "*3\r\n$5\r\nHello\r\n$5\r\nThere\r\n$5\r\nWorld\r\n";
-            actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
 
             // Use After
             response = lightClientRequest.SendCommand("LINSERT mylist AFTER World Bye");
             expectedResponse = ":4\r\n";
-            actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
 
             response = lightClientRequest.SendCommand("LRANGE mylist 0 -1", 5);
             expectedResponse = "*4\r\n$5\r\nHello\r\n$5\r\nThere\r\n$5\r\nWorld\r\n$3\r\nBye\r\n";
-            actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         [Test]
@@ -941,8 +930,7 @@ namespace Garnet.test
             // Use Before
             var response = lightClientRequest.SendCommand("LINSERT mylist BEFORE There Today");
             var expectedResponse = ":-1\r\n";
-            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         [Test]
@@ -952,8 +940,7 @@ namespace Garnet.test
             var response = lightClientRequest.SendCommand("HSET myhash onekey onepair");
             lightClientRequest.SendCommand("LINSERT myhash BEFORE one two");
             var expectedResponse = $"-{Encoding.ASCII.GetString(CmdStrings.RESP_ERR_WRONG_TYPE)}\r\n";
-            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         [Test]
@@ -963,8 +950,7 @@ namespace Garnet.test
             _ = lightClientRequest.SendCommand("RPUSH mylist one two three");
             var response = lightClientRequest.SendCommand("LSET mylist 0 four");
             var expectedResponse = "+OK\r\n";
-            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         [Test]
@@ -973,8 +959,7 @@ namespace Garnet.test
             using var lightClientRequest = TestUtils.CreateRequest();
             var response = lightClientRequest.SendCommand("LSET mylist 0 four");
             var expectedResponse = "-ERR no such key\r\n";
-            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         [Test]
@@ -984,8 +969,7 @@ namespace Garnet.test
             _ = lightClientRequest.SendCommand("RPUSH mylist one two three");
             var response = lightClientRequest.SendCommand("LSET mylist a four");
             var expectedResponse = "-ERR value is not an integer or out of range.\r\n";
-            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         [Test]
@@ -996,13 +980,11 @@ namespace Garnet.test
             var response = lightClientRequest.SendCommand("LSET mylist 10 four");
             // 
             var expectedResponse = "-ERR index out of range";
-            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
 
             response = lightClientRequest.SendCommand("LSET mylist -100 four");
             expectedResponse = "-ERR index out of range";
-            actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         [Test]
@@ -1012,8 +994,7 @@ namespace Garnet.test
             _ = lightClientRequest.SendCommand("RPUSH mylist one two three");
             var response = lightClientRequest.SendCommand("LSET mylist a");
             var expectedResponse = "-ERR wrong number of arguments for 'LSET'";
-            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         #endregion
@@ -1159,16 +1140,15 @@ namespace Garnet.test
 
             var expectedResponse = "$11\r\nvalue-three\r\n";
             var response = lightClientRequest.SendCommandChunks("RPOPLPUSH mylist myotherlist", bytesPerSend);
-            var actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
 
             expectedResponse = "*2\r\n$9\r\nvalue-one\r\n$9\r\nvalue-two\r\n";
             response = lightClientRequest.SendCommandChunks("LRANGE mylist 0 -1", bytesPerSend, 3);
-            actualValue = Encoding.ASCII.GetString(response).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         [Test]
+        [Category("LMOVE")]
         public void CanDoBasicLMove()
         {
             using var redis = ConnectionMultiplexer.Connect(TestUtils.GetConfig());
@@ -1193,12 +1173,24 @@ namespace Garnet.test
             ClassicAssert.AreEqual(key1Values[0], result);
 
             var members = db.ListRange(key2);
-            ClassicAssert.AreEqual(key1Values.Union(key2Values).ToArray(), members);
+            var keys = key1Values.Union(key2Values).ToArray();
+            ClassicAssert.AreEqual(keys, members);
+
+            result = db.ListMove(key2, key2, ListSide.Right, ListSide.Right);
+            ClassicAssert.AreEqual(key2Values[0], result);
+
+            members = db.ListRange(key2);
+            ClassicAssert.AreEqual(keys, members);
+
+            result = db.ListMove(key2, key2, ListSide.Left, ListSide.Left);
+            ClassicAssert.AreEqual(key1Values[0], result);
+
+            members = db.ListRange(key2);
+            ClassicAssert.AreEqual(keys, members);
 
             var exists = db.KeyExists(key1);
             ClassicAssert.IsFalse(exists);
         }
-
 
         [Test]
         public void CanDoLPopMultipleValues()
@@ -1278,11 +1270,10 @@ namespace Garnet.test
             //this operation should affect only if key already exists and holds a list.
             lightClientRequest.SendCommand("LPUSHX mylist value-two");
             lightClientRequest.SendCommand("RPUSHX mylist value-one");
-            var len = lightClientRequest.SendCommand("LLEN mylist");
+            response = lightClientRequest.SendCommand("LLEN mylist");
 
             var expectedResponse = $"-{Encoding.ASCII.GetString(CmdStrings.RESP_ERR_WRONG_TYPE)}\r\n";
-            var actualValue = Encoding.ASCII.GetString(len).Substring(0, expectedResponse.Length);
-            ClassicAssert.AreEqual(expectedResponse, actualValue);
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         [Test]
@@ -1389,6 +1380,21 @@ namespace Garnet.test
 
             exception = Assert.Throws<RedisServerException>(() => db.Execute("LMPOP", "1", "one", "LEFT", "COUNT"));
             ClassicAssert.AreEqual("ERR syntax error", exception.Message);
+        }
+
+        // Issue 945
+        [Test]
+        public void CanHandleLowerCaseBefore()
+        {
+            using var lightClientRequest = TestUtils.CreateRequest();
+
+            lightClientRequest.SendCommands("RPUSH mylist a", "PING", 1, 1);
+            lightClientRequest.SendCommands("RPUSH mylist c", "PING", 1, 1);
+            lightClientRequest.SendCommands("LINSERT mylist before c b", "PING", 1, 1);
+
+            var response = lightClientRequest.SendCommands("LRANGE mylist 0 -1", "PING", 4, 1);
+            var expectedResponse = "*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n+PONG\r\n";
+            TestUtils.AssertEqualUpToExpectedLength(expectedResponse, response);
         }
 
         [Test]

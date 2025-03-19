@@ -13,6 +13,7 @@ namespace Embedded.server
     internal sealed class EmbeddedRespServer : GarnetServer
     {
         readonly GarnetServerEmbedded garnetServerEmbedded;
+        readonly SubscribeBroker subscribeBroker;
 
         /// <summary>
         /// Creates an EmbeddedRespServer instance
@@ -23,6 +24,12 @@ namespace Embedded.server
         public EmbeddedRespServer(GarnetServerOptions opts, ILoggerFactory loggerFactory = null, GarnetServerEmbedded server = null) : base(opts, loggerFactory, server)
         {
             this.garnetServerEmbedded = server;
+            this.subscribeBroker = opts.DisablePubSub ? null :
+                new SubscribeBroker(
+                    null,
+                    opts.PubSubPageSizeBytes(),
+                    opts.SubscriberRefreshFrequencyMs,
+                    true);
         }
 
         /// <summary>
@@ -38,7 +45,7 @@ namespace Embedded.server
         /// <returns>A new RESP server session</returns>
         internal RespServerSession GetRespSession()
         {
-            return new RespServerSession(0, new EmbeddedNetworkSender(), storeWrapper, null, null, true);
+            return new RespServerSession(0, new EmbeddedNetworkSender(), storeWrapper, subscribeBroker: subscribeBroker, null, true);
         }
 
         internal EmbeddedNetworkHandler GetNetworkHandler()

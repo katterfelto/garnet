@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+using System.Diagnostics;
 using System.Threading;
 
 namespace Tsavorite.core
@@ -9,7 +10,27 @@ namespace Tsavorite.core
         where TStoreFunctions : IStoreFunctions<TKey, TValue>
         where TAllocator : IAllocator<TKey, TValue, TStoreFunctions>
     {
-        private void SplitBuckets(long hash)
+        internal void SplitAllBuckets()
+        {
+            var numChunks = (int)(state[1 - resizeInfo.version].size / Constants.kSizeofChunk);
+            if (numChunks == 0) numChunks = 1; // at least one chunk
+            for (var i = 0; i < numChunks; i++)
+            {
+                _ = SplitSingleBucket(i, numChunks);
+            }
+
+            // Wait for all chunks to be split
+            while (numPendingChunksToBeSplit > 0)
+                _ = Thread.Yield();
+
+            // Splits done, GC the old version of the hash table
+            Debug.Assert(numPendingChunksToBeSplit == 0);
+            state[1 - resizeInfo.version] = default;
+            overflowBucketsAllocatorResize.Dispose();
+            overflowBucketsAllocatorResize = null;
+        }
+
+        internal void SplitBuckets(long hash)
         {
             long masked_bucket_index = hash & state[1 - resizeInfo.version].size_mask;
             int chunkOffset = (int)(masked_bucket_index >> Constants.kSizeofChunkBits);
@@ -30,44 +51,43 @@ namespace Tsavorite.core
             // Process each chunk, wrapping around the end of the chunk list.
             for (int i = chunkOffset; i < chunkOffset + numChunks; i++)
             {
-                // Try to gain exclusive access to this chunk's split state (1 means locked, 0 means unlocked, 2 means the chunk was already split);
-                // another thread could also be running SplitChunks. TODO change these numbers to named consts.
-                if (0 == Interlocked.CompareExchange(ref splitStatus[i & (numChunks - 1)], 1, 0))
+                if (SplitSingleBucket(i, numChunks))
                 {
-                    // "Chunks" are offsets into one contiguous allocation: tableAligned
-                    long chunkSize = state[1 - resizeInfo.version].size / numChunks;
-                    long ptr = chunkSize * (i & (numChunks - 1));
-
-                    HashBucket* src_start = state[1 - resizeInfo.version].tableAligned + ptr;
-
-                    // The start of the destination chunk
-                    HashBucket* dest_start0 = state[resizeInfo.version].tableAligned + ptr;
-                    // The midpoint of the destination chunk (old version size is half the new version size)
-                    HashBucket* dest_start1 = state[resizeInfo.version].tableAligned + state[1 - resizeInfo.version].size + ptr;
-
-                    SplitChunk(src_start, dest_start0, dest_start1, chunkSize);
-
-                    // The split for this chunk is done (2 means completed; no Interlock is needed here because we have exclusive access).
-                    // splitStatus is re-created for each index size operation, so we never need to reset this to zero.
-                    splitStatus[i & (numChunks - 1)] = 2;
-
-                    if (Interlocked.Decrement(ref numPendingChunksToBeSplit) == 0)
-                    {
-                        // There are no more chunks to be split so GC the old version of the hash table
-                        state[1 - resizeInfo.version] = default;
-                        overflowBucketsAllocatorResize.Dispose();
-                        overflowBucketsAllocatorResize = null;
-                        GlobalStateMachineStep(systemState);
-                        return;
-                    }
                     break;
                 }
             }
 
             while (Interlocked.Read(ref splitStatus[chunkOffset & (numChunks - 1)]) == 1)
+                _ = Thread.Yield();
+        }
+
+        private bool SplitSingleBucket(int i, int numChunks)
+        {
+            // Try to gain exclusive access to this chunk's split state (1 means locked, 0 means unlocked, 2 means the chunk was already split);
+            // another thread could also be running SplitChunks. TODO change these numbers to named consts.
+            if (0 == Interlocked.CompareExchange(ref splitStatus[i & (numChunks - 1)], 1, 0))
             {
-                Thread.Yield();
+                // "Chunks" are offsets into one contiguous allocation: tableAligned
+                long chunkSize = state[1 - resizeInfo.version].size / numChunks;
+                long ptr = chunkSize * (i & (numChunks - 1));
+
+                HashBucket* src_start = state[1 - resizeInfo.version].tableAligned + ptr;
+
+                // The start of the destination chunk
+                HashBucket* dest_start0 = state[resizeInfo.version].tableAligned + ptr;
+                // The midpoint of the destination chunk (old version size is half the new version size)
+                HashBucket* dest_start1 = state[resizeInfo.version].tableAligned + state[1 - resizeInfo.version].size + ptr;
+
+                SplitChunk(src_start, dest_start0, dest_start1, chunkSize);
+
+                // The split for this chunk is done (2 means completed; no Interlock is needed here because we have exclusive access).
+                // splitStatus is re-created for each index size operation, so we never need to reset this to zero.
+                splitStatus[i & (numChunks - 1)] = 2;
+
+                _ = Interlocked.Decrement(ref numPendingChunksToBeSplit);
+                return true;
             }
+            return false;
         }
 
         private void SplitChunk(
@@ -86,6 +106,10 @@ namespace Tsavorite.core
                 // We'll step through a single bucket at a time
                 long* left_end = left + Constants.kOverflowBucketIndex;
                 long* right_end = right + Constants.kOverflowBucketIndex;
+
+                var systemState = stateMachineDriver.SystemState;
+                // Verify that we are not moving latched buckets
+                Debug.Assert(!HashBucket.IsLatched(src_start));
 
                 HashBucketEntry entry = default;
                 do
